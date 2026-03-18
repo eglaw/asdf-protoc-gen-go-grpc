@@ -39,15 +39,20 @@ download_release() {
     local version=$1
     local download_path=$2
 
+    # Remove 'v' prefix if present for the URL construction
+    version=${version#v}
+    
     # Construct the correct URL
     local url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
     
-    echo "* Downloading protoc-gen-go-grpc release $version from $url..."
+    echo "* Downloading protoc-gen-go-grpc release v${version} from $url..."
     
-    # Download with curl, retry without resume if needed
-    if ! curl -C - -L -o "$download_path" "$url" 2>/dev/null; then
-        echo "Resume failed, trying full download..."
-        curl -L -o "$download_path" "$url" || fail "Could not download $url"
+    # Download with curl
+    if ! curl -L --fail --retry 3 -o "$download_path" "$url" 2>/dev/null; then
+        # Try without the 'v' in the tag
+        url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/${version}.tar.gz"
+        echo "Retrying with: $url"
+        curl -L --fail --retry 3 -o "$download_path" "$url" || fail "Could not download from either URL"
     fi
     
     # Verify download was successful

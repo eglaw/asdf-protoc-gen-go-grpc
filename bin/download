@@ -10,50 +10,95 @@ echo "plugin_dir: $plugin_dir"
 source "${plugin_dir}/lib/utils.bash"
 
 mkdir -p "$ASDF_DOWNLOAD_PATH"
+mkdir -p "$ASDF_INSTALL_PATH/bin"
 
-# Get the Go version from .tool-versions or use a default
-GO_VERSION=$(asdf current golang 2>/dev/null | awk '{print $2}' || echo "latest")
-echo "Using Go version: $GO_VERSION"
+# Get the Go version from asdf, handling the output format properly
+if asdf current golang &>/dev/null; then
+    # Get just the version number, clean it up
+    GO_VERSION=$(asdf current golang 2>/dev/null | head -1 | awk '{print $2}' | tr -d '[:space:]')
+else
+    # Find the latest installed Go version
+    GO_VERSION=$(ls -1 "$HOME/.asdf/installs/golang/" | grep -v "^$" | sort -V | tail -1)
+fi
 
-# Set up Go environment for this build
-export GOROOT="$HOME/.asdf/installs/golang/$GO_VERSION/go"
-export PATH="$HOME/.asdf/installs/golang/$GO_VERSION/go/bin:$PATH"
-export GOPATH="$HOME/.asdf/installs/golang/$GO_VERSION/.go"
+echo "Using Go version: '$GO_VERSION'"
+
+# Construct the correct GOROOT path
+GOROOT="$HOME/.asdf/installs/golang/$GO_VERSION/go"
+GOROOT=${GOROOT%/}  # Remove trailing slash if any
+
+if [ ! -d "$GOROOT" ]; then
+    # Try alternate path structure (some asdf go installs use different layout)
+    if [ -d "$HOME/.asdf/installs/golang/$GO_VERSION" ]; then
+        GOROOT="$HOME/.asdf/installs/golang/$GO_VERSION"
+    else
+        fail "Cannot find Go installation at $GOROOT or $HOME/.asdf/installs/golang/$GO_VERSION"
+    fi
+fi
+
+echo "Using GOROOT: $GOROOT"
+
+# Set up Go environment
+export GOROOT
+export PATH="$GOROOT/bin:$PATH"
+export GOPATH="$ASDF_DOWNLOAD_PATH/.go"
 export GOBIN="$GOPATH/bin"
+export GO111MODULE=on
+
+mkdir -p "$GOPATH"
 
 # Verify Go is available
-go version || fail "Go not available. Please install golang via asdf first."
+if ! command -v go &>/dev/null; then
+    fail "Go not found in PATH after setting GOROOT=$GOROOT"
+fi
+
+echo "Go version: $(go version)"
 
 release_file="$ASDF_DOWNLOAD_PATH/$TOOL_NAME-$ASDF_INSTALL_VERSION.tar.gz"
 
 # Download tar.gz file to the download directory
 download_release "$ASDF_INSTALL_VERSION" "$release_file"
 
-# Extract contents of tar.gz file into the download directory
+# Extract contents
+echo "Extracting $release_file..."
 tar -xzf "$release_file" -C "$ASDF_DOWNLOAD_PATH" || fail "Could not extract $release_file"
 
-# Navigate to the extracted directory
+# Find the extracted directory
 extracted_dir=$(find "$ASDF_DOWNLOAD_PATH" -maxdepth 1 -type d -name "grpc-go-*" | head -1)
 if [ -z "$extracted_dir" ]; then
-    extracted_dir=$(find "$ASDF_DOWNLOAD_PATH" -maxdepth 1 -type d -name "grpc-go"* | head -1)
+    extracted_dir=$(find "$ASDF_DOWNLOAD_PATH" -maxdepth 1 -type d -name "grpc-go*" | head -1)
 fi
 
 if [ -z "$extracted_dir" ]; then
     fail "Could not find extracted grpc-go directory in $ASDF_DOWNLOAD_PATH"
 fi
 
-echo "Building from: $extracted_dir/cmd/$TOOL_NAME"
+echo "Found extracted directory: $extracted_dir"
 
-# Build protoc-gen-go-grpc binary with explicit Go environment
-pushd "$extracted_dir/cmd/$TOOL_NAME" >/dev/null 2>&1 || fail "Could not find $TOOL_NAME in $extracted_dir/cmd"
+# Build protoc-gen-go-grpc binary
+build_dir="$extracted_dir/cmd/$TOOL_NAME"
+if [ ! -d "$build_dir" ]; then
+    fail "Could not find $TOOL_NAME in $extracted_dir/cmd"
+fi
 
-# Build and output directly to asdf's bin directory
+pushd "$build_dir" >/dev/null 2>&1 || fail "Could not enter $build_dir"
+
+echo "Building $TOOL_NAME from $build_dir..."
+go mod download || echo "Warning: go mod download failed, continuing..."
 go build -o "$ASDF_INSTALL_PATH/bin/$TOOL_NAME" . || fail "Could not build $TOOL_NAME"
 
-popd >/dev/null 2>&1 || exit 1
+popd >/dev/null 2>&1
+
+# Verify the binary was created
+if [ ! -f "$ASDF_INSTALL_PATH/bin/$TOOL_NAME" ]; then
+    fail "Binary not created at $ASDF_INSTALL_PATH/bin/$TOOL_NAME"
+fi
+
+echo "Successfully built $TOOL_NAME: $($ASDF_INSTALL_PATH/bin/$TOOL_NAME --version 2>/dev/null || echo 'version check failed')"
 
 # Clean up
 rm -rf "$extracted_dir"
 rm -f "$release_file"
+rm -rf "$GOPATH"
 
-echo "Successfully built $TOOL_NAME $ASDF_INSTALL_VERSION"
+echo "Installation complete!"
