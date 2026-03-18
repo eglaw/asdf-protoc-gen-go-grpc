@@ -17,13 +17,30 @@ release_file="$ASDF_DOWNLOAD_PATH/$TOOL_NAME-$ASDF_INSTALL_VERSION.tar.gz"
 # Download tar.gz file to the download directory
 download_release "$ASDF_INSTALL_VERSION" "$release_file"
 
-#  Extract contents of tar.gz file into the download directory
-tar -xzf "$release_file" -C "$ASDF_DOWNLOAD_PATH" --strip-components=1 || fail "Could not extract $release_file"
+# Extract contents of tar.gz file into the download directory
+# Note: The repository structure has the cmd/protoc-gen-go-grpc nested deeper
+tar -xzf "$release_file" -C "$ASDF_DOWNLOAD_PATH" || fail "Could not extract $release_file"
 
-# Build protoc-gen-go-grpc binary
-pushd "$ASDF_DOWNLOAD_PATH"/cmd/"$TOOL_NAME" >/dev/null 2>&1 || exit 1
-go build || fail "Could not build $TOOL_NAME from $ASDF_DOWNLOAD_PATH"
+# Navigate to the extracted directory (it will have a long name like grpc-go-xxxxx)
+extracted_dir=$(find "$ASDF_DOWNLOAD_PATH" -maxdepth 1 -type d -name "grpc-go-*" | head -1)
+if [ -z "$extracted_dir" ]; then
+    # Try alternate pattern
+    extracted_dir=$(find "$ASDF_DOWNLOAD_PATH" -maxdepth 1 -type d -name "grpc-go"* | head -1)
+fi
+
+if [ -z "$extracted_dir" ]; then
+    fail "Could not find extracted grpc-go directory in $ASDF_DOWNLOAD_PATH"
+fi
+
+# Build protoc-gen-go-grpc binary from the correct path
+pushd "$extracted_dir/cmd/$TOOL_NAME" >/dev/null 2>&1 || fail "Could not find $TOOL_NAME in $extracted_dir/cmd"
+go build -o "$ASDF_DOWNLOAD_PATH/$TOOL_NAME" || fail "Could not build $TOOL_NAME"
+
+# Move the binary to the expected location
+mv "$ASDF_DOWNLOAD_PATH/$TOOL_NAME" "$ASDF_DOWNLOAD_PATH/.." 2>/dev/null || true
+
 popd >/dev/null 2>&1 || exit 1
 
-# Remove the tar.gz file since we don't need to keep it
-rm "$release_file"
+# Clean up
+rm -rf "$extracted_dir"
+rm -f "$release_file"

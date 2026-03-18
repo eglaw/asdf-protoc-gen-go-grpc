@@ -36,14 +36,20 @@ list_all_versions() {
 }
 
 download_release() {
-	local version filename url
-	version="$1"
-	filename="$2"
+    local version=$1
+    local download_path=$2
 
-	url="$GH_REPO/archive/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
-
-	echo "* Downloading $TOOL_NAME release $version..."
-	curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download $url"
+    # CORRECTED URL: includes /refs/tags/
+    local url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
+    
+    echo "* Downloading protoc-gen-go-grpc release $version..."
+    
+    # Download with curl, allowing resumption but not requiring it
+    curl -C - -L -o "$download_path" "$url" || {
+        # If resume fails, try without resume
+        echo "Resume failed, trying full download..."
+        curl -L -o "$download_path" "$url" || fail "Could not download $url"
+    }
 }
 
 install_version() {
@@ -69,4 +75,9 @@ install_version() {
 		rm -rf "$install_path"
 		fail "An error occurred while installing $TOOL_NAME $version."
 	)
+}
+
+fail() {
+    echo -e "asdf-protoc-gen-go-grpc: $*"
+    exit 1
 }
