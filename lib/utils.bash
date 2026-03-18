@@ -39,17 +39,23 @@ download_release() {
     local version=$1
     local download_path=$2
 
-    # CORRECTED URL: includes /refs/tags/
+    # Construct the correct URL
     local url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
     
-    echo "* Downloading protoc-gen-go-grpc release $version..."
+    echo "* Downloading protoc-gen-go-grpc release $version from $url..."
     
-    # Download with curl, allowing resumption but not requiring it
-    curl -C - -L -o "$download_path" "$url" || {
-        # If resume fails, try without resume
+    # Download with curl, retry without resume if needed
+    if ! curl -C - -L -o "$download_path" "$url" 2>/dev/null; then
         echo "Resume failed, trying full download..."
         curl -L -o "$download_path" "$url" || fail "Could not download $url"
-    }
+    fi
+    
+    # Verify download was successful
+    if [ ! -f "$download_path" ] || [ ! -s "$download_path" ]; then
+        fail "Downloaded file is empty or missing"
+    fi
+    
+    echo "Download complete: $(du -h "$download_path" | cut -f1)"
 }
 
 install_version() {
