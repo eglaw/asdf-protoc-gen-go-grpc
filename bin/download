@@ -12,51 +12,120 @@ source "${plugin_dir}/lib/utils.bash"
 mkdir -p "$ASDF_DOWNLOAD_PATH"
 mkdir -p "$ASDF_INSTALL_PATH/bin"
 
-# Get the Go version from asdf, handling the output format properly
+# Function to find any installed Go version
+find_go_installation() {
+    # First, check if go is in PATH and is from asdf
+    if command -v go &>/dev/null; then
+        local go_path=$(which go)
+        if [[ "$go_path" == *".asdf"* ]]; then
+            # Extract GOROOT from the go binary path
+            local go_root=$(dirname "$(dirname "$go_path")")
+            if [ -f "$go_root/bin/go" ]; then
+                echo "$go_root"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Find any installed Go version in asdf
+    local go_installations=($(ls -1 "$HOME/.asdf/installs/golang" 2>/dev/null | grep -v "^$" | sort -V))
+    
+    if [ ${#go_installations[@]} -eq 0 ]; then
+        return 1
+    fi
+    
+    # Try each installation until we find a working one
+    for version in "${go_installations[@]}"; do
+        # Try both possible paths
+        for path in "$HOME/.asdf/installs/golang/$version/go" "$HOME/.asdf/installs/golang/$version"; do
+            if [ -f "$path/bin/go" ]; then
+                echo "$path"
+                return 0
+            fi
+        done
+    done
+    
+    return 1
+}
+
+# Try to get current Go version from asdf, but handle the "Version" output
+GO_VERSION=""
 if asdf current golang &>/dev/null; then
-    # Get just the version number, clean it up
-    GO_VERSION=$(asdf current golang 2>/dev/null | head -1 | awk '{print $2}' | tr -d '[:space:]')
-else
-    # Find the latest installed Go version
-    GO_VERSION=$(ls -1 "$HOME/.asdf/installs/golang/" | grep -v "^$" | sort -V | tail -1)
-fi
-
-echo "Using Go version: '$GO_VERSION'"
-
-# Construct the correct GOROOT path
-GOROOT="$HOME/.asdf/installs/golang/$GO_VERSION/go"
-GOROOT=${GOROOT%/}  # Remove trailing slash if any
-
-if [ ! -d "$GOROOT" ]; then
-    # Try alternate path structure (some asdf go installs use different layout)
-    if [ -d "$HOME/.asdf/installs/golang/$GO_VERSION" ]; then
-        GOROOT="$HOME/.asdf/installs/golang/$GO_VERSION"
+    # Capture the actual output and parse it properly
+    CURRENT_OUTPUT=$(asdf current golang 2>&1 || true)
+    echo "Raw asdf output: $CURRENT_OUTPUT"
+    
+    # Check if it's the "No version set" message
+    if [[ "$CURRENT_OUTPUT" == *"No version set"* ]] || [[ "$CURRENT_OUTPUT" == *"Version"* ]]; then
+        echo "No Go version set in current context, will search for installed versions..."
+        GO_VERSION=""
     else
-        fail "Cannot find Go installation at $GOROOT or $HOME/.asdf/installs/golang/$GO_VERSION"
+        # Try to extract version number
+        GO_VERSION=$(echo "$CURRENT_OUTPUT" | head -1 | awk '{print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' || echo "")
     fi
 fi
 
-echo "Using GOROOT: $GOROOT"
+# If no version found, find any installed Go
+if [ -z "$GO_VERSION" ]; then
+    echo "Searching for installed Go versions..."
+    GOROOT=$(find_go_installation)
+    
+    if [ -z "$GOROOT" ]; then
+        fail "No Go installation found. Please install golang via asdf first: asdf install golang <version>"
+    fi
+    
+    echo "Found Go installation at: $GOROOT"
+else
+    # Try to find GOROOT for the specified version
+    echo "Using Go version: '$GO_VERSION'"
+    
+    # Try possible paths
+    POSSIBLE_PATHS=(
+        "$HOME/.asdf/installs/golang/$GO_VERSION/go"
+        "$HOME/.asdf/installs/golang/$GO_VERSION"
+        "$HOME/.asdf/installs/golang/v$GO_VERSION/go"
+        "$HOME/.asdf/installs/golang/v$GO_VERSION"
+    )
+    
+    GOROOT=""
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        if [ -f "$path/bin/go" ]; then
+            GOROOT="$path"
+            break
+        fi
+    done
+    
+    if [ -z "$GOROOT" ]; then
+        echo "Could not find Go $GO_VERSION, searching for any installed Go..."
+        GOROOT=$(find_go_installation)
+        
+        if [ -z "$GOROOT" ]; then
+            fail "No Go installation found"
+        fi
+        echo "Falling back to Go installation at: $GOROOT"
+    fi
+fi
 
-# Set up Go environment
+# Verify and set up Go environment
+if [ ! -f "$GOROOT/bin/go" ]; then
+    fail "Go binary not found at $GOROOT/bin/go"
+fi
+
 export GOROOT
 export PATH="$GOROOT/bin:$PATH"
 export GOPATH="$ASDF_DOWNLOAD_PATH/.go"
 export GOBIN="$GOPATH/bin"
 export GO111MODULE=on
+export GOFLAGS="-mod=mod"
 
 mkdir -p "$GOPATH"
 
-# Verify Go is available
-if ! command -v go &>/dev/null; then
-    fail "Go not found in PATH after setting GOROOT=$GOROOT"
-fi
-
-echo "Go version: $(go version)"
+echo "Using Go from: $GOROOT"
+echo "Go version: $($GOROOT/bin/go version)"
 
 release_file="$ASDF_DOWNLOAD_PATH/$TOOL_NAME-$ASDF_INSTALL_VERSION.tar.gz"
 
-# Download tar.gz file to the download directory
+# Download tar.gz file
 download_release "$ASDF_INSTALL_VERSION" "$release_file"
 
 # Extract contents
@@ -84,17 +153,19 @@ fi
 pushd "$build_dir" >/dev/null 2>&1 || fail "Could not enter $build_dir"
 
 echo "Building $TOOL_NAME from $build_dir..."
-go mod download || echo "Warning: go mod download failed, continuing..."
-go build -o "$ASDF_INSTALL_PATH/bin/$TOOL_NAME" . || fail "Could not build $TOOL_NAME"
+$GOROOT/bin/go mod download
+$GOROOT/bin/go build -o "$ASDF_INSTALL_PATH/bin/$TOOL_NAME" . || fail "Could not build $TOOL_NAME"
 
 popd >/dev/null 2>&1
 
-# Verify the binary was created
+# Verify the binary
 if [ ! -f "$ASDF_INSTALL_PATH/bin/$TOOL_NAME" ]; then
     fail "Binary not created at $ASDF_INSTALL_PATH/bin/$TOOL_NAME"
 fi
 
-echo "Successfully built $TOOL_NAME: $($ASDF_INSTALL_PATH/bin/$TOOL_NAME --version 2>/dev/null || echo 'version check failed')"
+chmod +x "$ASDF_INSTALL_PATH/bin/$TOOL_NAME"
+
+echo "Successfully built $TOOL_NAME: $($ASDF_INSTALL_PATH/bin/$TOOL_NAME --version 2>&1 || echo 'version check failed')"
 
 # Clean up
 rm -rf "$extracted_dir"

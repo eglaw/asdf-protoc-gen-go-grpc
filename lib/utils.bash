@@ -39,23 +39,30 @@ download_release() {
     local version=$1
     local download_path=$2
 
-    # Remove 'v' prefix if present for the URL construction
+    # Remove 'v' prefix if present
     version=${version#v}
     
-    # Construct the correct URL
-    local url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
+    # Try both URL patterns
+    local urls=(
+        "https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
+        "https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/${version}.tar.gz"
+        "https://github.com/grpc/grpc-go/archive/cmd/protoc-gen-go-grpc/v${version}.tar.gz"
+    )
     
-    echo "* Downloading protoc-gen-go-grpc release v${version} from $url..."
+    local success=false
+    for url in "${urls[@]}"; do
+        echo "* Trying to download from: $url"
+        if curl -L --fail --retry 2 -o "$download_path" "$url" 2>/dev/null; then
+            success=true
+            break
+        fi
+    done
     
-    # Download with curl
-    if ! curl -L --fail --retry 3 -o "$download_path" "$url" 2>/dev/null; then
-        # Try without the 'v' in the tag
-        url="https://github.com/grpc/grpc-go/archive/refs/tags/cmd/protoc-gen-go-grpc/${version}.tar.gz"
-        echo "Retrying with: $url"
-        curl -L --fail --retry 3 -o "$download_path" "$url" || fail "Could not download from either URL"
+    if [ "$success" = false ]; then
+        fail "Could not download protoc-gen-go-grpc release v${version} from any URL"
     fi
     
-    # Verify download was successful
+    # Verify download
     if [ ! -f "$download_path" ] || [ ! -s "$download_path" ]; then
         fail "Downloaded file is empty or missing"
     fi
